@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARZONE CHAMPION ULTRA 3D</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 16px;
+  background: #101820;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+h1 { color: #66ff99; font-size: 25px; }
+h2 { font-size: 19px; }
+
+.panel {
+  background: #202c36;
+  border: 1px solid #465563;
+  border-radius: 12px;
+  padding: 14px;
+  margin: 14px 0;
+}
+
+button {
+  background: #16894d;
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 13px;
+  margin: 5px 0;
+  width: 100%;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+button:disabled { opacity: .5; }
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 125px;
+  margin: 10px 0;
+  padding: 10px;
+  background: #080d12;
+  color: #b7ffc9;
+  border: 1px solid #637381;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  margin: 6px 0;
+  border-radius: 7px;
+  border: 1px solid #637381;
+  background: #080d12;
+  color: white;
+  font-size: 16px;
+}
+
+#status {
+  color: #ffd166;
+  overflow-wrap: anywhere;
+}
+
+#messages {
+  min-height: 80px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #080d12;
+  padding: 10px;
+  overflow-wrap: anywhere;
+}
+
+.small {
+  color: #c0ccd6;
+  font-size: 13px;
+  line-height: 1.5;
+}
+</style>
+</head>
+
+<body>
+
+<h1>WARZONE CHAMPION ULTRA 3D</h1>
+<p>Offline Hotspot Multiplayer — Connection Test</p>
+
+<div class="panel">
+  <h2>1. Connection status</h2>
+  <p id="status">Not connected. Choose HOST or JOIN.</p>
+  <p class="small">
+    Both phones must be connected to the same local hotspot.
+    Internet-based signaling servers are not used by this test.
+  </p>
+</div>
+
+<div class="panel">
+  <h2>2. Host a match</h2>
+  <button id="host">CREATE HOST OFFER</button>
+  <p class="small">
+    On the host phone, create an offer and copy the complete
+    offer text to the joining phone.
+  </p>
+  <textarea id="offer" placeholder="Host offer appears here"></textarea>
+  <button id="copyOffer">COPY HOST OFFER</button>
+
+  <h2>Paste the answer from your friend</h2>
+  <textarea id="answer" placeholder="Paste your friend's answer here"></textarea>
+  <button id="acceptAnswer">CONNECT TO FRIEND</button>
+</div>
+
+<div class="panel">
+  <h2>3. Join a match</h2>
+  <p class="small">On the joining phone, paste the host's offer below.</p>
+  <textarea id="remoteOffer" placeholder="Paste host offer here"></textarea>
+  <button id="join">CREATE JOIN ANSWER</button>
+
+  <p class="small">Copy this answer back to the host phone.</p>
+  <textarea id="joinAnswer" placeholder="Your answer appears here"></textarea>
+  <button id="copyAnswer">COPY JOIN ANSWER</button>
+</div>
+
+<div class="panel">
+  <h2>4. Test communication</h2>
+  <p class="small">
+    After the status says CONNECTED, send a message to the other phone.
+  </p>
+  <input id="message" placeholder="Type a message">
+  <button id="send" disabled>SEND TO OTHER PHONE</button>
+  <div id="messages">Messages will appear here.</div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+
+  let pc = null;
+  let channel = null;
+  let role = "";
+
+  function status(message) {
+    $("status").textContent = message;
+  }
+
+  function log(message) {
+    const line = document.createElement("p");
+    line.textContent = message;
+    $("messages").appendChild(line);
+    $("messages").scrollTop = $("messages").scrollHeight;
+  }
+
+  function setupChannel(ch) {
+    channel = ch;
+
+    channel.onopen = () => {
+      status("CONNECTED! Data channel is open.");
+      $("send").disabled = false;
+      log("Connection established.");
+    };
+
+    channel.onclose = () => {
+      status("Connection closed.");
+      $("send").disabled = true;
+    };
+
+    channel.onerror = () => {
+      status("Data channel error. Try reconnecting.");
+    };
+
+    channel.onmessage = event => {
+      try {
+        const data = JSON.parse(event.data);
+        log("FRIEND: " + String(data.text ?? ""));
+      } catch {
+        log("FRIEND: " + event.data);
+      }
+    };
+  }
+
+  async function newConnection() {
+    if (pc) {
+      pc.close();
+    }
+
+    pc = new RTCPeerConnection({
+      iceServers: []
+    });
+
+    pc.oniceconnectionstatechange = () => {
+      status("Network: " + pc.iceConnectionState);
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") {
+        status("CONNECTED! You can exchange messages.");
+      } else if (pc.connectionState === "failed") {
+        status(
+          "Connection failed. This network/browser may not permit " +
+          "direct local WebRTC. Check both phones are on the hotspot."
+        );
+      } else if (pc.connectionState === "disconnected") {
+        status("Connection interrupted. Waiting for recovery...");
+      }
+    };
+
+    return pc;
+  }
+
+  async function waitForIceComplete(connection) {
+    if (connection.iceGatheringState === "complete") return;
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(
+          "Local network details did not finish gathering in time."
+        ));
+      }, 30000);
+
+      function cleanup() {
+        clearTimeout(timeout);
+        connection.removeEventListener(
+          "icegatheringstatechange", check
+        );
+      }
+
+      function check() {
+        if (connection.iceGatheringState === "complete") {
+          cleanup();
+          resolve();
+        }
+      }
+
+      connection.addEventListener("icegatheringstatechange", check);
+    });
+  }
+
+  function readDescription(text) {
+    let data;
+
+    try {
+      data = JSON.parse(text.trim());
+    } catch {
+      throw new Error("The pasted connection text is not valid JSON.");
+    }
+
+    if (!data || !data.type || !data.sdp) {
+      throw new Error("The connection text is incomplete.");
+    }
+
+    return data;
+  }
+
+  $("host").onclick = async () => {
+    try {
+      role = "host";
+      $("host").disabled = true;
+      status("Creating host offer...");
+
+      const connection = await newConnection();
+      setupChannel(connection.createDataChannel("warzone-chat"));
+
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+      status("Gathering local network details...");
+      await waitForIceComplete(connection);
+
+      $("offer").value = JSON.stringify(connection.localDescription);
+      status("Offer ready. Copy it to your friend's phone.");
+    } catch (error) {
+      status("Host error: " + error.message);
+      $("host").disabled = false;
+    }
+  };
+
+  $("acceptAnswer").onclick = async () => {
+    try {
+      if (!pc || role !== "host") {
+        throw new Error("Create a host offer first.");
+      }
+
+      const description = readDescription($("answer").value);
+      if (description.type !== "answer") {
+        throw new Error("Paste the JOIN ANSWER, not another offer.");
+      }
+
+      await pc.setRemoteDescription(description);
+      status("Answer accepted. Connecting to your friend...");
+    } catch (error) {
+      status("Answer error: " + error.message);
+    }
+  };
+
+  $("join").onclick = async () => {
+    try {
+      role = "join";
+      $("join").disabled = true;
+      status("Reading host offer...");
+
+      const remote = readDescription($("remoteOffer").value);
+      if (remote.type !== "offer") {
+        throw new Error("Paste the HOST OFFER.");
+      }
+
+      const connection = await newConnection();
+
+      connection.ondatachannel = event => {
+        setupChannel(event.channel);
+      };
+
+      await connection.setRemoteDescription(remote);
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+
+      status("Gathering local network details...");
+      await waitForIceComplete(connection);
+
+      $("joinAnswer").value = JSON.stringify(connection.localDescription);
+      status("Answer ready. Copy it back to the host phone.");
+    } catch (error) {
+      status("Join error: " + error.message);
+      $("join").disabled = false;
+    }
+  };
+
+  $("copyOffer").onclick = async () => {
+    await copyText($("offer").value);
+  };
+
+  $("copyAnswer").onclick = async () => {
+    await copyText($("joinAnswer").value);
+  };
+
+  async function copyText(value) {
+    if (!value) {
+      status("Nothing to copy yet.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(value);
+      status("Copied. Transfer the text to the other phone.");
+    } catch {
+      status("Select the text box and copy its text manually.");
+    }
+  }
+
+  $("send").onclick = () => {
+    const text = $("message").value.trim();
+
+    if (!channel || channel.readyState !== "open") {
+      status("Not connected yet.");
+      return;
+    }
+
+    if (!text) return;
+
+    channel.send(JSON.stringify({ text }));
+    log("YOU: " + text);
+    $("message").value = "";
+  };
+
+  $("message").addEventListener("keydown", event => {
+    if (event.key === "Enter") $("send").click();
+  });
+})();
+</script>
+
+</body>
+  </html>
